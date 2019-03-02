@@ -1,0 +1,18 @@
+#! /bin/bash
+usage="usage: $(basename "$0") target(s)
+
+Removes location data, in the form of standard GPS EXIF tags, from target(s).
+
+Note that vendors may have additional proprietary location tags, which will not
+be removed."
+
+if [ $# -eq 0 ]
+  then
+    echo "$usage"
+    exit
+fi
+
+for target in "$@"
+do
+    exiftool -GPSLatitude= -GPSLatitudeRef= -GPSLongitude= -GPSLongitudeRef= "$target"
+done

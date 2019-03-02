@@ -1,0 +1,15 @@
+#! /bin/bash
+usage="usage: $(basename "$0") dir
+
+Prints paths of files missing GPS tags. Requires exiftool."
+
+if [ $# -eq 0 ]
+  then
+    echo "$usage"
+    exit
+fi
+
+exiftool -sourcefile -r -if \
+    '(not $gpslatitude or not $gpslongitude)' \
+    -csv "$@" \
+    2> /dev/null

@@ -1,0 +1,26 @@
+#! /bin/bash
+usage="usage: $(basename "$0") directory
+
+Applies GPS tags from sidecar files (e.g image.jpg.xmp) to the matching base
+file (e.g. image.jpg). Requires exiftool.
+"
+
+if [ $# -eq 0 ]
+  then
+    echo "$usage"
+    exit
+fi
+
+
+for f in "$1"/*.xmp
+do
+    base=${f%.*}
+    exiftool\
+        -overwrite_original_in_place\
+        -TagsFromFile "$f"\
+        -GPSLatitude\
+        -GPSLatitudeRef\
+        -GPSLongitude\
+        -GPSLongitudeRef\
+        "$base"
+done

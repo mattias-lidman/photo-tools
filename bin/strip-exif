@@ -1,0 +1,20 @@
+#! /bin/bash
+usage="usage: $(basename "$0") target(s)
+
+Removes EXIF data from target(s). Note that ExifTool, and therefore
+$(basename "$0"), does not guarantee complete removal of all metadata.
+This applies in particular to RAW formats because some proprietary
+tags may be necessary for rendering the image.
+
+WARNING: Modifies files in place."
+
+if [ $# -eq 0 ]
+  then
+    echo "$usage"
+    exit
+fi
+
+for target in "$@"
+do
+    exiftool -all= "$target"
+done

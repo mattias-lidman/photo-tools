@@ -1,0 +1,24 @@
+#! /bin/bash
+usage="usage: $(basename "$0") target(s)
+
+Prints summary EXIF info. Requires exiftool."
+
+if [ $# -eq 0 ]
+  then
+    echo "$usage"
+    exit
+fi
+
+exiftool\
+    -datetimeoriginal\
+    -fullimagesize\
+    -model\
+    -lensmodel\
+    -focallength\
+    -focallengthin35mmformat\
+    -aperture\
+    -shutterspeed\
+    -iso\
+    -gpslatitude\
+    -gpslongitude\
+    "$@"

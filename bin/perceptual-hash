@@ -1,0 +1,113 @@
+#! /usr/local/bin/python3
+
+import sys
+import logging
+import subprocess
+from itertools import tee, islice, chain
+
+log = logging.getLogger(__name__)
+LOGLEVEL = 'DEBUG'
+
+USAGE = """usage: perceptual-hash filename
+
+Prints a perceptual hash of an image, as a binary string. Useful for finding
+near-duplicate images, like processed versions of an original or exposure
+bracket sets.
+
+Visually similar images will usually have an identical or near identical hash.
+The algorithm is resistent to even fairly large color changes (like saturation,
+contrast, brightness, etc.) and minor rotation and cropping (such as
+straightening by a few degress), but is defeated by any major cropping or
+rotation.
+
+Requires ImageMagick.
+
+Based on dHash as described here:
+http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html
+"""
+
+
+def grayscale_pixels(filename):
+    # Convert to a 9x9 grayscale image, output as pixel enumeration
+    im_args = [
+        'magick',
+        'convert',
+        '-type', 'GrayScale',
+        '-resize', '9x9!',  # ! to force ignore aspect ratio
+        filename,
+        '-depth', '8',
+        'txt:'
+    ]
+    result = subprocess.run(
+        im_args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    if result.returncode != 0:
+        msg = "magick error on {0}: {1}".format(filename, result.stderr)
+        log.error(msg)
+        sys.exit(-1)
+
+    # Pixel data starts on the second line and looks like
+    # `0,0: (31611)  #7B7B7B  gray(123)`
+    pixel_rows = result.stdout.split('\n')[1:-1]
+    pixels = []
+    for row in pixel_rows:
+        row = row.split(' ')
+        value = int(row[1].strip('()'))
+        pixels.append(value)
+    return pixels
+
+
+def print_pixels(pixels):
+    # For debugging
+    n = 0
+    while n < 9*9:
+        print(pixels[n:n+9])
+        n += 9
+
+
+def dhash(filename):
+    pixels = grayscale_pixels(filename)
+    # For each row/column, identify relative gradient direction between each
+    # pixel pair. This gives you one bit of information for each pixel
+    # adjacency, or 144 (8x9x2) for a 9x9 grayscale.
+
+    def gradient_direction(row_or_col):
+        # 1 if a pixel is brighter than the preceding pixel in the
+        # same row/column, 0 otherwise.
+        a, b = tee(row_or_col)
+        next(b, None)
+        pairwise = zip(a, b)
+        return map(
+            lambda x: 1 if x[0] < x[1] else 0,
+            pairwise
+        )
+
+    row_gradients = []
+    col_gradients = []
+    for i in range(9):
+        row = pixels[i:i+9]
+        col = islice(pixels, i, None, 9)
+        row_gradients.append(gradient_direction(row))
+        col_gradients.append(gradient_direction(col))
+    row_hash = ''.join([str(c) for c in chain(*row_gradients)])
+    col_hash = ''.join([str(c) for c in chain(*col_gradients)])
+    return row_hash + col_hash
+
+
+if __name__ == "__main__":
+    logging.basicConfig()
+    log.setLevel(LOGLEVEL)
+
+    if len(sys.argv) == 1:
+        print(USAGE)
+        sys.exit(0)
+    if len(sys.argv) > 2:
+        print("One image at a time, please.")
+        sys.exit(-1)
+
+    dHash = dhash(sys.argv[1])
+    print(dHash)
+    sys.exit(0)

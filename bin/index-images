@@ -1,0 +1,208 @@
+#! /usr/local/bin/python3
+
+import os
+import sys
+import subprocess
+import logging
+
+log = logging.getLogger(__name__)
+
+LOGLEVEL = 'DEBUG'
+IMAGE_EXTENSIONS = (
+    'jpg',
+    'jpeg',
+    'gif',
+    'png',
+    'tif',
+    'tiff',
+    'arw',
+)
+EXIFTOOL_FIELDS = (
+    'SourceFile',
+    'FileName',
+    'DateTimeOriginal',  # TODO: Insert as datetime instead of string
+    'ImageWidth',
+    'ImageHeight',
+    'Model',
+    'LensModel',
+    'FocalLength',
+    'FocalLengthIn35mmFormat',
+    'Aperture',
+    'ShutterSpeed',
+    'ISO',
+)
+
+
+def validate_exiftool_out(exiftool_output):
+    exiftool_output = exiftool_output.split('\n')
+    assert(len(exiftool_output) != 1)
+    assert(exiftool_output[-1] == '')  # Output always ends with newline
+    if len(exiftool_output) == 2:
+        return None, None  # Header only -- no images in `root`
+
+    header = exiftool_output[0].split(',')
+
+    assert(header[1] == 'FileName')
+    rows = []
+    for row in exiftool_output[1:-1]:
+        row = row.replace("'", "''")
+        row = row.split(',')
+        # Filter out xmp (sidecar) files:
+        if row[1].lower().endswith('.xmp'):
+            continue
+        # TODO: This will need to deal with all sorts of quoting issues...
+        row_string = "('{0}', '{1}', {2})".format(
+            row[0],  # SourceFile
+            row[1],  # FileName
+            ','.join("'{0}'".format(x) for x in row[2:])
+        )
+        rows.append(row_string)
+    return header, rows
+
+
+def db_insert(db, header, rows):
+    insert = """
+        INSERT OR IGNORE INTO images ({0})
+        VALUES {1}
+    """.format(','.join(header), ','.join(rows))
+    result = subprocess.run(['sqlite3', db], input=insert, text=True)
+    if result.returncode != 0:
+        for row in rows:
+            insert = """
+                INSERT OR IGNORE INTO images ({0})
+                VALUES {1}
+            """.format(','.join(header), row)
+            result = subprocess.run(['sqlite3', db], input=insert, text=True)
+            if result.returncode != 0:
+                log.error("SQLite error on insert:\n{0}".format(insert))
+
+
+def md5(db):
+    # TODO: Batching, error checking, check if file exists
+    select = """
+        SELECT SourceFile
+        FROM images
+        WHERE MD5 IS NULL OR MD5 = ''
+    """
+    result = subprocess.run(
+        ['sqlite3', db],
+        stdout=subprocess.PIPE,
+        input=select,
+        text=True)
+    files = result.stdout.split('\n')[:-1]
+    for f in files:
+        result = subprocess.run(
+            ['md5', '-q', f],
+            stdout=subprocess.PIPE, text=True)
+        md5sum = result.stdout.strip('\n')
+        f = f.replace("'", "''")
+        update = """
+            UPDATE images
+            SET MD5 = '{0}'
+            WHERE SourceFile = '{1}'
+        """.format(md5sum, f)
+        result = subprocess.run(['sqlite3', db], input=update, text=True)
+
+
+def phash(db):
+    # TODO: Batch, error checking...
+    # TODO: Double quote in exif causes sqlite error
+    select = """
+        SELECT SourceFile
+        FROM images
+        WHERE perceptual_hash IS NULL OR perceptual_hash = ''
+    """
+    result = subprocess.run(
+        ['sqlite3', db],
+        stdout=subprocess.PIPE,
+        input=select,
+        text=True
+    )
+    files = result.stdout.split('\n')[:-1]
+
+    for f in files:
+        unsupported = ['ARW', 'mp4', 'gif', 'webm']
+        if any([f.endswith(format_) for format_ in unsupported]):
+            # image magick doesn't support a bunch of formats
+            # TODO: Better handling of unsupported formats
+            continue
+        result = subprocess.run(
+            ['perceptual-hash', f],
+            stdout=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            msg = "perceptual-hash error on {0}: {1}".format(f, result.stderr)
+            log.warning(msg)
+            continue
+        phash = result.stdout.strip('\n')
+        f = f.replace("'", "''")
+        insert = """
+            UPDATE IMAGES
+            SET perceptual_hash = '{0}'
+            WHERE SourceFile = '{1}'
+        """.format(phash, f)
+        result = subprocess.run(['sqlite3', db], input=insert, text=True)
+
+
+def index_images(db, directory):
+    # Assumes `directory` is an absolute path.
+    exiftool_fields = ['-{0}'.format(field) for field in EXIFTOOL_FIELDS]
+    exiftool_args = ['exiftool', '-csv'] + exiftool_fields + [',']
+    for root, _, _ in os.walk(directory):
+        exiftool_args[-1] = root
+        results = subprocess.run(
+            exiftool_args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf8')
+        if results.returncode != 0:
+            msg = "exiftool error on {0}: {1}".format(root, results.stderr)
+            log.warning(msg)
+            continue
+        header, rows = validate_exiftool_out(results.stdout)
+        if not header or not rows:
+            log.info("{0}: No images found".format(root))
+        else:
+            log.info("{0}: Found {1} images -- processing".format(
+                root, len(rows)))
+            db_insert(db, header, rows)
+
+
+if __name__ == "__main__":
+    # TODO: Validate db schema is as expected at startup
+    # TODO: Wrap whole run in a transaction so we can roll back at any time
+    # TODO: Handle images that don't contain all wanted tags -- exiftool
+    # doesn't include them as blank fields in csv.
+    # TODO: exiftool takes a loooong time if there's a lot of files. Expliticly
+    # pass a list of files that hasn't been indexed yet instead of a whole dir.
+    # TODO: flag to update already indexed files
+    # TODO: Create database from schema if it does not exist
+    # TODO: Real arg handling with argparse
+    logging.basicConfig()
+    log.setLevel(LOGLEVEL)
+    md5_ = False
+    phash_ = False
+    cwd = os.getcwd()
+    if len(sys.argv) == 1:
+        print("Usage: index-images <db> <dir>")
+        sys.exit(-1)
+    if '--md5' in sys.argv:
+        md5_ = True
+        sys.argv.remove('--md5')
+    if '--phash' in sys.argv:
+        phash_ = True
+        sys.argv.remove('--phash')
+    db = sys.argv[1]
+    if len(sys.argv) == 2:
+        directory = None
+    elif len(sys.argv) == 3:
+        directory = sys.argv[2]
+        if directory.startswith('./'):
+            directory = directory[2:]
+        if not directory.startswith('/'):
+            directory = cwd + '/' + directory
+    if directory:
+        index_images(db, directory)
+    if md5_:
+        md5(db)
+    if phash_:
+        phash(db)

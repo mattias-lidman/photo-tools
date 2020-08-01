@@ -1,0 +1,130 @@
+#! /usr/local/bin/python3
+
+import os
+import sys
+import subprocess
+import logging
+from collections import deque, namedtuple
+
+log = logging.getLogger(__name__)
+
+LOGLEVEL = 'DEBUG'
+LIMIT = 20
+
+
+class BKTree(object):
+
+    def __init__(self):
+        self.tree = None
+
+    def _hamming_distance(self, x, y):
+        return bin(int(x.value, 2) ^ int(y.value, 2)).count('1')
+
+    def add(self, value):
+        node = self.tree
+        if node is None:
+            self.tree = (value, {})
+            return
+
+        while True:
+            parent, children = node
+            distance = self._hamming_distance(value, parent)
+            node = children.get(distance)
+            if node is None:
+                children[distance] = (value, {})
+                break
+
+    def find(self, item, limit):
+        """
+        Returns nodes similar to `item` within a hamming distance of `limit`.
+        """
+        if self.tree is None:
+            return []
+
+        candidates = deque([self.tree])
+        found = []
+
+        while candidates:
+            candidate, children = candidates.popleft()
+            distance = self._hamming_distance(candidate, item)
+            if distance <= limit:
+                found.append((distance, candidate))
+
+            if children:
+                lower = distance - limit
+                upper = distance + limit
+                candidates.extend(
+                    c for d, c in children.items() if lower <= d <= upper)
+
+        found.sort(key=lambda x: x[0])
+        return found
+
+
+def perceptual_neighbours(db, preview):
+    select = """
+        SELECT SourceFile, perceptual_hash
+        FROM images
+        WHERE
+            perceptual_hash IS NOT NULL AND
+            perceptual_hash != ''
+    """
+    result = subprocess.run(
+        ['sqlite3', db], stdout=subprocess.PIPE, input=select, text=True)
+    files = result.stdout.split('\n')[:-1]
+    tree = BKTree()
+    items = []
+    Item = namedtuple('Item', ['key', 'value'])
+
+    for f in files:
+        filename, perceptual_hash = f.split('|')
+        item = Item(filename, perceptual_hash)
+        tree.add(item)
+        items.append(item)
+
+    # Keep a list of already seen images to filter duplicates, because A->B
+    # will also show up as B->A. This is really naive and lazy but should serve
+    # as a first pass.
+    seen = set()
+
+    for item in items:
+        result = tree.find(item, LIMIT)
+        seen.add(item.key)
+        result = [r for r in result if r[1].key not in seen]
+        if not result:
+            continue
+        print("{0} similarities:".format(item.key))
+        filepaths = [item.key]
+        for r in result:
+            filepaths.append(r[1].key)
+            print("{0}: {1}".format(r[0], r[1].key))
+            seen.add(r[1].key)
+        if preview:
+            # macOS only
+            to_preview = []
+            for path in filepaths:
+                if os.path.isfile(path):
+                    to_preview.append(path)
+                else:
+                    log.warning("The file {0} does not exist.".format(path))
+            subprocess.run([
+                'open',
+                '-W',  # Wait until application closes
+                '-a',
+                'Preview',
+                *to_preview,
+            ])
+
+
+if __name__ == "__main__":
+    # TODO: Validate db schema version
+    logging.basicConfig()
+    log.setLevel(LOGLEVEL)
+    preview = False
+    if '--preview' in sys.argv:
+        preview = True
+        sys.argv.remove('--preview')
+    if len(sys.argv) == 1:
+        print("Usage: perceptual-neighbours [--preview] db")
+        sys.exit(-1)
+    db = sys.argv[1]
+    perceptual_neighbours(db, preview)

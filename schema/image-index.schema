@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS images (
+    Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    SourceFile TEXT PRIMARY KEY,
+    FileName TEXT,
+    DateTimeOriginal TEXT,
+    ImageWidth integer,
+    ImageHeight integer,
+    Model TEXT,
+    LensModel TEXT,
+    FocalLength float,
+    FocalLengthIn35mmFormat float,
+    Aperture float,
+    ShutterSpeed TEXT,
+    ISO integer,
+    GPSLatitude TEXT,
+    GPSLongitute TEXT,
+    MD5 TEXT,
+    perceptual_hash TEXT
+);
